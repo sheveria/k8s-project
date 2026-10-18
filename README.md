@@ -14,8 +14,8 @@ configuration is defined as code.
 
 Documentation:
 
-- [docs/architecture.md](docs/architecture.docx): what is deployed, how it fits together, **why** each choice was made, the **bonus points** and the known limitations.
-- [docs/operations.md](docs/operations.docx): how to deploy, maintain, upgrade, troubleshoot, rebuild and tear down.
+- [docs/architecture.docx](docs/architecture.docx): what is deployed, how it fits together, **why** each choice was made, the **bonus points** and the known limitations.
+- [docs/operations.docx](docs/operations.docx): how to deploy, maintain, upgrade, troubleshoot, rebuild and tear down.
 
 ## Repository layout
 
