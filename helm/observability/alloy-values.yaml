@@ -1,0 +1,77 @@
+# Grafana Alloy: the log collector. It reads the logs of every pod in the
+# cluster through the Kubernetes API and sends them to Loki.
+# Installed as release "alloy" in namespace "monitoring".
+
+controller:
+  # Logs are read via the API server, not from files on every node.
+  # HIGH AVAILABILITY: two replicas in a cluster (see "clustering" below).
+  # For bigger clusters, switch to a DaemonSet that reads the log files on
+  # each node (see docs/architecture.md).
+  type: deployment
+  replicas: 2
+
+# Let Prometheus scrape Alloy's own metrics (the stack monitors itself).
+serviceMonitor:
+  enabled: true
+
+alloy:
+  # The two replicas find each other and divide the pods between them, so each pod's
+  # logs are read once. If one replica fails, the other takes over its pods.
+  clustering:
+    enabled: true
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+  configMap:
+    create: true
+    content: |
+      // 1. Discover all pods in the cluster.
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      // 2. Turn Kubernetes metadata into Loki labels, so logs can be
+      //    filtered in Grafana by namespace, pod, container and app.
+      discovery.relabel "pod_logs" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          target_label  = "app"
+        }
+      }
+
+      // 3. Read the logs of these pods through the Kubernetes API.
+      loki.source.kubernetes "pod_logs" {
+        targets    = discovery.relabel.pod_logs.output
+        forward_to = [loki.write.default.receiver]
+
+        // Share the work between the Alloy replicas (no duplicate logs).
+        clustering {
+          enabled = true
+        }
+      }
+
+      // 4. Send the logs to Loki.
+      loki.write "default" {
+        endpoint {
+          url = "http://loki.monitoring.svc:3100/loki/api/v1/push"
+        }
+      }

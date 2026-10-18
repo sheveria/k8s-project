@@ -1,0 +1,74 @@
+# Tempo: trace storage. Installed as release "tempo" in namespace "monitoring"
+# (chart grafana-community/tempo, monolithic mode: one process, no Kafka).
+#   - microsim sends traces to  http://tempo.monitoring.svc:4318  (OTLP over HTTP)
+#   - Grafana reads traces from http://tempo.monitoring.svc:3200
+#
+# Traces are stored in a GCS bucket created by Terraform (terraform/storage.tf)
+# and kept for 7 days. The pod gets access through Workload Identity,
+# so there are no keys or passwords.
+
+replicas: 1
+
+# The Kubernetes service account is linked to the Google service account that
+# can use the bucket. The name must match terraform/storage.tf.
+serviceAccount:
+  create: true
+  name: tempo
+  annotations:
+    iam.gke.io/gcp-service-account: tempo-gcs@k8s-for-test-512006.iam.gserviceaccount.com
+
+tempo:
+  # Delete traces older than 7 days. The bucket has a longer lifecycle rule
+  # (14 days) as a safety net only.
+  retention: 168h
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+  storage:
+    trace:
+      backend: gcs
+      gcs:
+        bucket_name: k8s-for-test-512006-tempo
+      # Remove the default local-disk settings, they are not used with GCS.
+      local: null
+      # The write-ahead log (recent data that is not yet in the bucket)
+      # stays on the small local disk below.
+      wal:
+        path: /var/tempo/wal
+
+  # The metrics generator turns traces into metrics (request rate, errors,
+  # latency per service, and the service graph) and writes them to Prometheus.
+  metricsGenerator:
+    enabled: true
+    storage:
+      path: /var/tempo/metrics
+      # Prometheus runs as two independent replicas. A normal Service would send each
+      # batch to only ONE of them, so each replica would hold incomplete data.
+      # Writing to both replicas directly (via the headless service
+      # "prometheus-operated") gives both the full set of span metrics.
+      remote_write:
+        - url: http://prometheus-kube-prometheus-stack-prometheus-0.prometheus-operated.monitoring.svc:9090/api/v1/write
+        - url: http://prometheus-kube-prometheus-stack-prometheus-1.prometheus-operated.monitoring.svc:9090/api/v1/write
+
+  overrides:
+    defaults:
+      metrics_generator:
+        processors:
+          - service-graphs
+          - span-metrics
+
+# Small local disk: only a short-term buffer. The durable data is in GCS.
+persistence:
+  enabled: true
+  size: 5Gi
+  # Storage class of the cluster: standard-rwo = balanced SSD Persistent Disk.
+  storageClassName: standard-rwo
+
+# Let Prometheus scrape Tempo's own metrics.
+serviceMonitor:
+  enabled: true

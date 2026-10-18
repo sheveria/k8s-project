@@ -1,0 +1,58 @@
+# Sample application: microsim (https://github.com/yurishkuro/microsim).
+# It simulates a microservice system (the built-in "hotrod" configuration:
+# frontend, customer, driver, route ...) and sends traces to Tempo.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: microsim
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: microsim
+  namespace: microsim
+  labels:
+    app.kubernetes.io/name: microsim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: microsim
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: microsim
+    spec:
+      containers:
+        - name: microsim
+          # Pinned version (never use "latest" in a real deployment).
+          image: yurishkuro/microsim:v0.6.0
+          args:
+            - "-c"
+            - "hotrod" # built-in simulation config
+            - "-d"
+            - "8760h" # run for one year: microsim exits when the duration ends
+            - "-w"
+            - "2" # number of parallel workers sending requests
+            - "-s"
+            - "500ms" # pause between requests of one worker (controls the load)
+          env:
+            # Where to send traces: Tempo's OTLP/HTTP receiver.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://tempo.monitoring.svc.cluster.local:4318
+            # Use plain HTTP (inside the cluster there is no TLS).
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: "true"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

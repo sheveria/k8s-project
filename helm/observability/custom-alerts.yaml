@@ -1,0 +1,94 @@
+# Our own alert rules, as code. They complement the ~100 default Kubernetes
+# alerts that kube-prometheus-stack already installs (for example pod crash
+# loops, nodes or persistent volumes running out of space, Alertmanager
+# failing to send notifications).
+#
+# Prometheus evaluates these rules; Alertmanager sends the e-mails.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: custom-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    # ---------------------------------------------------------------------
+    # The sample application. These alerts use the metrics that Tempo
+    # derives from traces ("span metrics").
+    # ---------------------------------------------------------------------
+    - name: application
+      rules:
+        - alert: AppHighErrorRate
+          expr: |
+            sum(rate(traces_spanmetrics_calls_total{status_code="STATUS_CODE_ERROR"}[5m]))
+              /
+            sum(rate(traces_spanmetrics_calls_total[5m])) > 0.05
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "More than 5% of requests fail"
+            description: "The share of failed spans has been above 5% for 10 minutes. Open the Application and stack overview dashboard and Explore -> Tempo to find the failing service."
+
+        - alert: AppNoTraces
+          expr: |
+            sum(rate(traces_spanmetrics_calls_total[10m])) == 0
+              or
+            absent(traces_spanmetrics_calls_total)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "No traces received"
+            description: "No spans have been received for 15 minutes. Either the application stopped sending traces or Tempo is not receiving them. Check the microsim and tempo pods."
+
+        - alert: SampleAppDown
+          expr: kube_deployment_status_replicas_available{namespace="microsim",deployment="microsim"} < 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "The sample application has no running pods"
+            description: "Deployment microsim has had no available replica for 5 minutes. Run: kubectl describe deployment microsim -n microsim"
+
+    # ---------------------------------------------------------------------
+    # The observability stack itself ("who watches the watchers").
+    # ---------------------------------------------------------------------
+    - name: observability-stack
+      rules:
+        - alert: LogOrTraceStoreDown
+          expr: kube_statefulset_status_replicas_ready{namespace="monitoring",statefulset=~"loki|tempo"} < 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.statefulset }} is not running"
+            description: "StatefulSet {{ $labels.statefulset }} has had no ready pod for 5 minutes. New logs or traces are being lost. Run: kubectl describe pod -n monitoring {{ $labels.statefulset }}-0"
+
+        - alert: LogCollectorDown
+          expr: kube_deployment_status_replicas_available{namespace="monitoring",deployment="alloy"} < 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Alloy (log collector) is not running"
+            description: "No logs are being shipped to Loki. Run: kubectl logs -n monitoring deploy/alloy"
+
+        - alert: StackReplicaDegraded
+          expr: kube_statefulset_status_replicas_ready{namespace="monitoring"} < kube_statefulset_replicas{namespace="monitoring"}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.statefulset }} has fewer ready replicas than desired"
+            description: "StatefulSet {{ $labels.statefulset }} has been running with fewer replicas than configured for 10 minutes. The service still works (high availability), but redundancy is reduced. Run: kubectl get pods -n monitoring"
+
+        - alert: MonitoringTargetDown
+          expr: up{namespace="monitoring"} == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Prometheus cannot scrape {{ $labels.job }}"
+            description: "The target {{ $labels.instance }} of job {{ $labels.job }} has been down for 10 minutes."

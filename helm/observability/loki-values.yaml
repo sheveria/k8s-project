@@ -1,0 +1,106 @@
+# Loki: log storage. Installed as release "loki" in namespace "monitoring",
+# so other components reach it at http://loki.monitoring.svc:3100
+# (chart grafana-community/loki).
+#
+# Logs are stored in a GCS bucket created by Terraform (terraform/storage.tf)
+# and kept for 30 days. The pod gets access through Workload Identity,
+# so there are no keys or passwords.
+
+# Monolithic mode: every replica runs all Loki components in one process.
+# Because the data is in a GCS bucket (shared by all replicas), the replicas
+# can form a ring and replicate incoming logs between themselves.
+deploymentMode: Monolithic
+
+# The Kubernetes service account is linked to the Google service account that
+# can use the bucket. The name must match terraform/storage.tf.
+serviceAccount:
+  create: true
+  name: loki
+  annotations:
+    iam.gke.io/gcp-service-account: loki-gcs@k8s-for-test-512006.iam.gserviceaccount.com
+
+loki:
+  # No multi-tenancy: one tenant, no X-Scope-OrgID header needed.
+  auth_enabled: false
+
+  commonConfig:
+    # HIGH AVAILABILITY: every incoming log line is written to 3 replicas, and
+    # writes keep succeeding while at least 2 of them are up.
+    replication_factor: 3
+
+  storage:
+    type: gcs
+    bucketNames:
+      # The same bucket is used for logs and for rules.
+      chunks: k8s-for-test-512006-loki
+      ruler: k8s-for-test-512006-loki
+      admin: k8s-for-test-512006-loki
+
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: gcs
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+
+  # Delete logs older than 30 days. The bucket has a longer lifecycle rule
+  # (45 days) as a safety net only.
+  limits_config:
+    retention_period: 720h
+  compactor:
+    retention_enabled: true
+    delete_request_store: gcs
+
+singleBinary:
+  # Three replicas, one per node (the chart's default anti-affinity forbids two on one node).
+  replicas: 3
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1 # a drain or upgrade may take down only one replica at a time
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+  # Small local disk: only a short-term buffer (write-ahead log and index cache).
+  # The durable data lives in the GCS bucket.
+  persistence:
+    enabled: true
+    size: 5Gi
+    # Storage class of the cluster: standard-rwo = balanced SSD Persistent Disk.
+    storageClass: standard-rwo
+
+# ---------------------------------------------------------------------------
+# The chart also contains the "Simple Scalable" targets (write, read, backend)
+# and enables them with 3 replicas by default. They must be switched off
+# explicitly, because they cannot run together with the single binary above.
+# ---------------------------------------------------------------------------
+write:
+  replicas: 0
+read:
+  replicas: 0
+backend:
+  replicas: 0
+
+# ---------------------------------------------------------------------------
+# Optional parts switched off to keep the installation small and simple.
+# ---------------------------------------------------------------------------
+gateway:
+  enabled: false # we talk to Loki directly, no nginx in front
+chunksCache:
+  enabled: false # memcached is not needed at this size
+resultsCache:
+  enabled: false
+lokiCanary:
+  enabled: false # synthetic log generator, not needed
+test:
+  enabled: false # helm test pod, not needed
+
+# Let Prometheus scrape Loki's own metrics (the stack monitors itself).
+monitoring:
+  serviceMonitor:
+    enabled: true

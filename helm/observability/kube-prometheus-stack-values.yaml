@@ -1,0 +1,270 @@
+# kube-prometheus-stack: Prometheus (metrics), Grafana (UI for everything),
+# Alertmanager, node-exporter, kube-state-metrics and ready-made dashboards.
+# Installed as release "kube-prometheus-stack" in namespace "monitoring", so the
+# services are called kube-prometheus-stack-prometheus and kube-prometheus-stack-grafana.
+
+# ---------------------------------------------------------------------------
+# Components that do not work on GKE (the control plane is managed by Google,
+# we cannot scrape it). Disabling them avoids permanently failing targets
+# and false alerts.
+# ---------------------------------------------------------------------------
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+coreDns:
+  enabled: false
+kubeDns:
+  enabled: false
+
+defaultRules:
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeProxy: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+
+# ---------------------------------------------------------------------------
+# Prometheus
+# ---------------------------------------------------------------------------
+prometheus:
+  # Never let a node drain or upgrade take down both Prometheus replicas at once.
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  prometheusSpec:
+    # HIGH AVAILABILITY: two independent Prometheus replicas, each with its own
+    # disk, scrape the same targets. If one fails, the other keeps collecting.
+    # Both evaluate the alert rules and send alerts; Alertmanager removes the duplicates.
+    replicas: 2
+    # "hard" = the two replicas must run on different nodes.
+    podAntiAffinity: hard
+
+    # Keep two days of metrics, but never more than 10 GB (the disk is 15 Gi).
+    retention: 2d
+    retentionSize: 10GB
+
+    # Allow Tempo to push span-derived metrics (service graph, request rate,
+    # latency) into Prometheus via remote write.
+    enableRemoteWriteReceiver: true
+
+    # Pick up ServiceMonitors/PodMonitors from ALL namespaces, not only
+    # those created by this Helm release.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false # also load our own PrometheusRule objects (custom-alerts.yaml)
+
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1536Mi
+      limits:
+        memory: 3Gi
+
+    # Persistent disk so metrics survive a pod restart.
+    # standard-rwo = balanced SSD Persistent Disk (list classes: kubectl get storageclass).
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: standard-rwo
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 15Gi
+
+# ---------------------------------------------------------------------------
+# Alertmanager: receives alerts from Prometheus (about 100 default Kubernetes
+# rules plus our own rules in custom-alerts.yaml) and sends them by e-mail.
+#
+# E-mails are sent through SMTP2GO (https://www.smtp2go.com).
+# BEFORE INSTALLING, replace CHANGE_ME_SMTP2GO_USER below with the SMTP user name
+# created in the SMTP2GO dashboard (Sending -> SMTP Users).
+# The SMTP password is NOT stored here: it is read from the Kubernetes Secret
+# "alertmanager-smtp" (key "password"), see docs/operations.md.
+# The sender domain (sheveria.com) must be verified in SMTP2GO (Sending -> Verified
+# Senders), otherwise SMTP2GO rejects the messages.
+# Port 465 uses implicit TLS and works from Google Cloud (only outbound port 25 is blocked).
+# ---------------------------------------------------------------------------
+alertmanager:
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  alertmanagerSpec:
+    # HIGH AVAILABILITY: three Alertmanagers form a cluster and share what they
+    # already notified, so one e-mail is sent per alert even though both
+    # Prometheus replicas report it to all of them.
+    replicas: 3
+    podAntiAffinity: hard # each replica on a different node
+
+    # Mount the secret into the pod at /etc/alertmanager/secrets/alertmanager-smtp/
+    secrets:
+      - alertmanager-smtp
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+
+  config:
+    global:
+      resolve_timeout: 5m
+      smtp_smarthost: mail.smtp2go.com:465
+      smtp_from: alerts@sheveria.com                # sender address (domain verified in SMTP2GO)
+      smtp_auth_username: alerts@sheveria.com    # SMTP user name from the SMTP2GO dashboard
+      smtp_auth_password_file: /etc/alertmanager/secrets/alertmanager-smtp/password
+      smtp_require_tls: true
+
+    # A critical alert silences the warning/info alerts of the same kind,
+    # so one problem does not produce several e-mails.
+    inhibit_rules:
+      - source_matchers:
+          - 'severity = critical'
+        target_matchers:
+          - 'severity =~ warning|info'
+        equal:
+          - 'namespace'
+          - 'alertname'
+      - source_matchers:
+          - 'severity = warning'
+        target_matchers:
+          - 'severity = info'
+        equal:
+          - 'namespace'
+          - 'alertname'
+      - source_matchers:
+          - 'alertname = InfoInhibitor'
+        target_matchers:
+          - 'severity = info'
+        equal:
+          - 'namespace'
+      - target_matchers:
+          - 'alertname = InfoInhibitor'
+
+    route:
+      receiver: email
+      group_by: ['namespace', 'alertname']
+      group_wait: 30s      # wait before the first message, to group related alerts
+      group_interval: 5m   # wait before sending new alerts of an already sent group
+      repeat_interval: 12h # remind about a still-firing alert every 12 hours
+      routes:
+        # "Watchdog" and "InfoInhibitor" are meant to fire all the time
+        # (they prove that the alerting pipeline works). Do not e-mail them.
+        - receiver: 'null'
+          matchers:
+            - alertname = "Watchdog"
+        - receiver: 'null'
+          matchers:
+            - alertname = "InfoInhibitor"
+
+    receivers:
+      - name: 'null'
+      - name: email
+        email_configs:
+          - to: zhekasheverya@gmail.com # where to send the alerts
+            send_resolved: true     # also send a message when the problem is gone
+
+    templates:
+      - '/etc/alertmanager/config/*.tmpl'
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+
+# ---------------------------------------------------------------------------
+# Grafana: the single entry point for metrics, logs and traces.
+# ---------------------------------------------------------------------------
+grafana:
+  # The admin password is NOT stored in git. The secret "grafana-admin" is
+  # created by scripts/deploy.ps1 (keys: admin-user and admin-password).
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+
+  grafana.ini:
+    server:
+      domain: grafana.sheveria.com
+      root_url: https://grafana.sheveria.com
+    users:
+      allow_sign_up: false
+    auth.anonymous:
+      enabled: false
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+
+  # Keep dashboards and settings created in the UI after a restart.
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClassName: standard-rwo
+  # A ReadWriteOnce disk can be attached to one pod at a time, so the old pod
+  # must stop before the new one starts.
+  deploymentStrategy:
+    type: Recreate
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+  service:
+    type: ClusterIP
+    annotations:
+      # Use container-native load balancing (the load balancer talks to the pod directly).
+      cloud.google.com/neg: '{"ingress": true}'
+      # Attach the health check settings from helm/observability/grafana-ingress.yaml.
+      cloud.google.com/backend-config: '{"default": "grafana-backendconfig"}'
+
+  # Loki (logs) and Tempo (traces) are added as extra data sources.
+  # The Prometheus data source (uid "prometheus") is created by the chart itself.
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      uid: loki
+      access: proxy
+      url: http://loki.monitoring.svc.cluster.local:3100
+      jsonData:
+        maxLines: 1000
+
+    - name: Tempo
+      type: tempo
+      uid: tempo
+      access: proxy
+      url: http://tempo.monitoring.svc.cluster.local:3200
+      jsonData:
+        # Service map is drawn from metrics that Tempo writes into Prometheus.
+        serviceMap:
+          datasourceUid: prometheus
+        nodeGraph:
+          enabled: true

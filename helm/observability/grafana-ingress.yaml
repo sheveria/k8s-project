@@ -1,0 +1,66 @@
+# Publishes Grafana on https://grafana.sheveria.com through a Google Cloud
+# HTTP(S) load balancer with a free Google-managed certificate.
+#
+# Before the certificate can be issued, the DNS A record
+# grafana.sheveria.com must point to the reserved IP (terraform output ingress_ip).
+# Issuing takes from 15 to 60 minutes after DNS is correct.
+
+# Health check settings for the load balancer.
+# Grafana's "/" answers with a redirect (HTTP 302), which the load balancer
+# would treat as unhealthy, so we check /api/health instead.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: grafana-backendconfig
+  namespace: monitoring
+spec:
+  healthCheck:
+    type: HTTP
+    requestPath: /api/health
+---
+# Free TLS certificate, issued and renewed automatically by Google.
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: grafana-cert
+  namespace: monitoring
+spec:
+  domains:
+    - grafana.sheveria.com
+---
+# Redirect all plain HTTP requests to HTTPS and require TLS 1.2 or newer
+# (SSL policy created by Terraform, terraform/security.tf).
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: grafana-frontendconfig
+  namespace: monitoring
+spec:
+  redirectToHttps:
+    enabled: true
+  sslPolicy: grafana-ssl-policy
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: monitoring
+  annotations:
+    # Use the Google Cloud external load balancer.
+    kubernetes.io/ingress.class: "gce"
+    # The static IP reserved by Terraform (resource google_compute_global_address.ingress_ip).
+    kubernetes.io/ingress.global-static-ip-name: grafana-ingress-ip
+    networking.gke.io/managed-certificates: grafana-cert
+    networking.gke.io/v1beta1.FrontendConfig: grafana-frontendconfig
+spec:
+  rules:
+    - host: grafana.sheveria.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kube-prometheus-stack-grafana
+                port:
+                  number: 80
