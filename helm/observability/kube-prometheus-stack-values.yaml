@@ -47,7 +47,7 @@ prometheus:
     podAntiAffinity: hard
 
     # Keep two days of metrics, but never more than 10 GB (the disk is 15 Gi).
-    retention: 2d
+    retention: 7d
     retentionSize: 10GB
 
     # Allow Tempo to push span-derived metrics (service graph, request rate,
@@ -87,7 +87,7 @@ prometheus:
 # created in the SMTP2GO dashboard (Sending -> SMTP Users).
 # The SMTP password is NOT stored here: it is read from the Kubernetes Secret
 # "alertmanager-smtp" (key "password"), see docs/operations.md.
-# The sender domain (sheveria.com) must be verified in SMTP2GO (Sending -> Verified
+# The sender domain (examople.com) must be verified in SMTP2GO (Sending -> Verified
 # Senders), otherwise SMTP2GO rejects the messages.
 # Port 465 uses implicit TLS and works from Google Cloud (only outbound port 25 is blocked).
 # ---------------------------------------------------------------------------
@@ -116,9 +116,9 @@ alertmanager:
   config:
     global:
       resolve_timeout: 5m
-      smtp_smarthost: mail.smtp2go.com:465
-      smtp_from: alerts@sheveria.com                # sender address (domain verified in SMTP2GO)
-      smtp_auth_username: alerts@sheveria.com    # SMTP user name from the SMTP2GO dashboard
+      smtp_smarthost: <smtp_serverFQDN>
+      smtp_from: <smtp_from_emailadress>                # sender address (domain verified in SMTP2GO)
+      smtp_auth_username: <smtp_server_username>   # SMTP user name from the SMTP2GO dashboard
       smtp_auth_password_file: /etc/alertmanager/secrets/alertmanager-smtp/password
       smtp_require_tls: true
 

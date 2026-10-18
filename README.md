@@ -2,20 +2,20 @@
 
 A GKE cluster that runs a sample microservice application together with an
 observability stack: **metrics, logs and traces** in one Grafana, published at
-**https://grafana.sheveria.com**, with e-mail alerting. All infrastructure and
+**GrafanaWebPage**, with e-mail alerting. All infrastructure and
 configuration is defined as code.
 
 | Signal | Collected by | Stored in | Retention | Viewed in |
 |---|---|---|---|---|
-| Metrics | Prometheus (+ node-exporter, kube-state-metrics) | Prometheus (persistent disk) | 2 days | Grafana |
+| Metrics | Prometheus (+ node-exporter, kube-state-metrics) | Prometheus (persistent disk) | 7 days | Grafana |
 | Logs | Grafana Alloy | Loki, in a GCS bucket | 30 days | Grafana → Explore → Loki |
 | Traces | OpenTelemetry (sent by the app) | Tempo, in a GCS bucket | 7 days | Grafana → Explore → Tempo |
 | Alerts | Prometheus rules (default + custom) | Alertmanager | n/a | E-mail, Grafana → Alerting |
 
 Documentation:
 
-- [docs/architecture.md](docs/architecture.md): what is deployed, how it fits together, **why** each choice was made, the **bonus points** and the known limitations.
-- [docs/operations.md](docs/operations.md): how to deploy, maintain, upgrade, troubleshoot, rebuild and tear down.
+- [docs/architecture.md](docs/architecture.docx): what is deployed, how it fits together, **why** each choice was made, the **bonus points** and the known limitations.
+- [docs/operations.md](docs/operations.docx): how to deploy, maintain, upgrade, troubleshoot, rebuild and tear down.
 
 ## Repository layout
 
@@ -45,7 +45,4 @@ a DNS zone where you can create one A record, and an SMTP account (SMTP2GO) for 
 
 It is a deliberately small setup that is close to production in its
 **security basics, data durability for logs and traces, alerting, reproducibility and structure**.
-Prometheus (×2), Alertmanager (×3), Loki (×3) and Alloy (×2) are redundant; Tempo and Grafana are single replicas. The gaps and the path to production are listed in
-[architecture: limitations and next steps](docs/architecture.md#limitations-and-next-steps),
-and the optional extras that were attempted or described are in
-[architecture: bonus points](docs/architecture.md#bonus-points).
+Prometheus (×2), Alertmanager (×3), Loki (×3) and Alloy (×2) are redundant; Tempo and Grafana are single replicas. 
